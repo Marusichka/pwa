@@ -1,81 +1,185 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { ReactiveFormsModule, FormBuilder } from '@angular/forms';
 import { AppComponent } from './app.component';
 import { ReminderService } from './services/reminder.service';
+import { ReactiveFormsModule } from '@angular/forms';
+import { signal, WritableSignal } from '@angular/core';
 
 describe('AppComponent', () => {
   let component: AppComponent;
   let fixture: ComponentFixture<AppComponent>;
-  let reminderServiceSpy: jasmine.SpyObj<ReminderService>;
+  let mockReminderService: jasmine.SpyObj<ReminderService>;
+  let acceptNewTasksSignal: WritableSignal<boolean>;
 
   beforeEach(async () => {
-    const reminderSpy = jasmine.createSpyObj('ReminderService', [
-      'setReminder',
-      'removeNotification',
-      'requestPermission',
-      'getNotificationTimerArray',
-      'acceptNewTasksSignal'
-    ]);
+    // Writable signal to mock the service state
+    acceptNewTasksSignal = signal(true);
 
-    // Mocking service methods
-    reminderSpy.getNotificationTimerArray.and.returnValue([]); // Mocking getNotificationTimerArray response
-    reminderSpy.acceptNewTasksSignal.and.returnValue(true); // Mocking a return value for the signal
+    // Spy object matching exact ReminderService interface
+    mockReminderService = jasmine.createSpyObj<ReminderService>(
+      'ReminderService',
+      [
+        'setReminder',
+        'removeNotification',
+        'disallowAcceptNewTasks',
+        'resetTaskAcceptance'
+      ],
+      {
+        acceptNewTasks: acceptNewTasksSignal.asReadonly()
+      }
+    );
+
+    // Prevent native browser alert dialogs during test execution
+    spyOn(window, 'alert');
 
     await TestBed.configureTestingModule({
-      imports: [ReactiveFormsModule],
-      declarations: [AppComponent],
+      imports: [AppComponent, ReactiveFormsModule],
       providers: [
-        FormBuilder,
-        { provide: ReminderService, useValue: reminderSpy }
+        { provide: ReminderService, useValue: mockReminderService }
       ]
     }).compileComponents();
 
     fixture = TestBed.createComponent(AppComponent);
     component = fixture.componentInstance;
-    reminderServiceSpy = TestBed.inject(ReminderService)  as jasmine.SpyObj<ReminderService>;
-    fixture.detectChanges();
-    await fixture.whenStable();  // Wait for async tasks to finish
+    fixture.detectChanges(); // Triggers ngOnInit
   });
 
   it('should create the component', () => {
     expect(component).toBeTruthy();
   });
 
-  it('should initialize with one reminder form group', async () => {
-    // Ensure that ngOnInit has completed before checking
-    await fixture.whenStable(); // Waits for asynchronous tasks in the component to finish
-    expect(component.reminders.length).toBe(1);
+  describe('ngOnInit', () => {
+    it('should initialize form with 1 default reminder control', () => {
+      expect(component.reminderForm).toBeDefined();
+      expect(component.reminders.length).toBe(1);
+    });
   });
 
-  it('should add a reminder when previous reminder is valid', () => {
-    component.reminders.at(0).setValue({ time: '10:00', message: 'Test task' });
-    component.addReminder();
-    expect(component.reminders.length).toBe(2);
+  describe('requestNotificationPermission', () => {
+    it('should trigger notification permission dialog if supported', () => {
+      if ('Notification' in window) {
+        spyOn(Notification, 'requestPermission').and.returnValue(Promise.resolve('granted'));
+        component.requestNotificationPermission();
+        expect(Notification.requestPermission).toHaveBeenCalled();
+      } else {
+        component.requestNotificationPermission();
+        expect((window as Window).alert).toHaveBeenCalledWith('This browser does not support system notifications.');
+      }
+    });
   });
 
-  it('should not add a reminder if the previous reminder is invalid', () => {
-    component.reminders.at(0).setValue({ time: '', message: '' });
-    component.addReminder();
-    expect(component.reminders.length).toBe(1);
+  describe('addReminder', () => {
+    it('should not add a new reminder if the current one is invalid', () => {
+      component.addReminder();
+
+      expect(component.reminders.length).toBe(1);
+      expect((window as Window).alert).toHaveBeenCalledWith(
+        'Please fill out the previous reminder before adding a new one.'
+      );
+    });
+
+    it('should add a new reminder control if the previous control is valid', () => {
+      component.reminders.at(0).patchValue({
+        time: '2026-07-30T12:00',
+        message: 'Drink water'
+      });
+
+      component.addReminder();
+
+      expect(component.reminders.length).toBe(2);
+    });
+
+    it('should enforce the maximum limit of 5 tasks', () => {
+      for (let i = 0; i < 4; i++) {
+        component.reminders.at(i).patchValue({ time: '2026-07-30T12:00', message: `Task ${i + 1}` });
+        component.addReminder();
+      }
+
+      expect(component.reminders.length).toBe(5);
+
+      component.reminders.at(4).patchValue({ time: '2026-07-30T12:00', message: 'Task 5' });
+      component.addReminder();
+
+      expect(component.reminders.length).toBe(5);
+      expect((window as Window).alert).toHaveBeenCalledWith('5 tasks allowed');
+    });
   });
 
-  it('should remove a reminder and call removeNotification from ReminderService', () => {
-    component.reminders.at(0).setValue({ time: '10:00', message: 'Test task' });
-    component.removeReminder(0);
-    expect(component.reminders.length).toBe(0);
-    expect(reminderServiceSpy.removeNotification).toHaveBeenCalledWith(0);
+  describe('removeReminder', () => {
+    it('should remove control from FormArray and trigger service.removeNotification', () => {
+      component.reminders.at(0).patchValue({ time: '2026-07-30T10:00', message: 'Task 1' });
+      component.addReminder();
+
+      expect(component.reminders.length).toBe(2);
+
+      component.removeReminder(0);
+
+      expect(component.reminders.length).toBe(1);
+      expect(mockReminderService.removeNotification).toHaveBeenCalledWith(0);
+    });
   });
 
-  it('should set reminders and call setReminder from ReminderService', () => {
-    component.reminders.at(0).setValue({ time: '10:00', message: 'Test task' });
-    // Call setReminders to trigger the service method
-    component.setReminders();
-    expect(reminderServiceSpy.setReminder).toHaveBeenCalledWith('10:00', 'Test task', 0, jasmine.any(Function));
+  describe('setReminders', () => {
+    it('should show alert and abort if form is invalid', () => {
+      component.setReminders();
+
+      expect((window as Window).alert).toHaveBeenCalledWith('Please fill all required fields.');
+      expect(mockReminderService.setReminder).not.toHaveBeenCalled();
+    });
+
+    it('should submit valid reminders and set acceptNewTasks to false', () => {
+      spyOnProperty(Notification, 'permission', 'get').and.returnValue('granted');
+
+      component.reminders.at(0).patchValue({
+        time: '2026-07-30T18:00',
+        message: 'Workout time'
+      });
+
+      component.setReminders();
+
+      expect(mockReminderService.setReminder).toHaveBeenCalledWith('2026-07-30T18:00', 'Workout time', 0);
+      expect(mockReminderService.disallowAcceptNewTasks).toHaveBeenCalled();
+      expect((window as Window).alert).toHaveBeenCalledWith('Reminders set successfully!');
+    });
+
+    it('should reset form automatically when all tasks complete', () => {
+      component.reminders.at(0).patchValue({
+        time: '2026-07-30T18:00',
+        message: 'Workout time'
+      });
+
+      acceptNewTasksSignal.set(false);
+      fixture.detectChanges();
+
+      acceptNewTasksSignal.set(true);
+      fixture.detectChanges();
+
+      expect(component.reminders.length).toBe(1);
+      expect(component.reminders.at(0).value.time).toBe('');
+    });
   });
 
+  describe('Disabled State Checks', () => {
+    it('checkSubmitDisabled should return true if form is invalid', () => {
+      expect(component.checkSubmitDisabled()).toBeTrue();
+    });
 
-  it('should request notification permission on init', () => {
-    component.ngOnInit();
-    expect(reminderServiceSpy.requestPermission).toHaveBeenCalled();
+    it('checkSubmitDisabled should return true if acceptNewTasks signal is false', () => {
+      component.reminders.at(0).patchValue({ time: '2026-07-30T12:00', message: 'Task' });
+      acceptNewTasksSignal.set(false);
+
+      expect(component.checkSubmitDisabled()).toBeTrue();
+    });
+
+    it('checkSubmitDisabled should return false if form is valid and acceptNewTasks is true', () => {
+      component.reminders.at(0).patchValue({ time: '2026-07-30T12:00', message: 'Task' });
+
+      expect(component.checkSubmitDisabled()).toBeFalse();
+    });
+
+    it('checkAddReminderDisabled should return true when acceptNewTasks is false', () => {
+      acceptNewTasksSignal.set(false);
+
+      expect(component.checkAddReminderDisabled()).toBeTrue();
+    });
   });
 });

@@ -1,11 +1,11 @@
-import {Injectable, signal} from '@angular/core';
-import {CounterObject, NotificationObject} from '../types/notification';
+import { Injectable, signal, Signal } from '@angular/core';
+import { CounterObject, NotificationObject } from '../types/notification';
 
 @Injectable({
   providedIn: 'root'
 })
 export class ReminderService {
-  private icons = [
+  private readonly icons: string[] = [
     'assets/icons/2_m.jpg',
     'assets/icons/4_m.jpg',
     'assets/icons/5_m.jpg',
@@ -23,108 +23,144 @@ export class ReminderService {
     'assets/icons/20_m.jpg',
     'assets/icons/22_m.jpg',
     'assets/icons/27_m.jpg',
-    'assets/icons/30_m.jpg',
+    'assets/icons/30_m.jpg'
   ];
-  private notificationTimerArray: CounterObject[] = []; // keep here timers' references to clear timeOuts
-  private notificationsSet: Set<number> = new Set<number>(); // to track Notification by index
-  public acceptNewTasksSignal = signal<boolean>(true);
 
+  // Map storing timer entries with their index, timeout ID, and completion status
+  private readonly activeTimersMap = new Map<number, { id: ReturnType<typeof setTimeout>; completed: boolean }>();
+  
+  // Writable signal tracking whether new tasks can be added
+  private readonly acceptNewTasksSignal = signal<boolean>(true);
+  
+  // Read-only signal exposed to components
+  public readonly acceptNewTasks: Signal<boolean> = this.acceptNewTasksSignal.asReadonly();
 
+  // Returns a random icon path for notifications
   private getRandomIcon(): string {
     const randomIndex = Math.floor(Math.random() * this.icons.length);
     return this.icons[randomIndex];
   }
 
+  // Calculates delay in milliseconds, supporting both "HH:mm" and ISO/datetime string formats
+  private calculateDelay(time: string): number {
+    if (!time) return 0;
 
-  public getNotificationTimerArray(): CounterObject[] {
-    return this.notificationTimerArray;
-  }
+    const now = new Date();
+    let targetDate: Date;
 
-
-  private clearNotificationTimer(index: number): void {
-    const timerIndex = this.notificationTimerArray.findIndex((_, i) => i === index);
-    if (timerIndex !== -1) {
-      clearTimeout(this.notificationTimerArray[timerIndex].id);
-      this.notificationTimerArray.splice(timerIndex, 1);
-      this.notificationsSet.delete(index);
-    }
-  }
-
-
-  private showNotification(object: NotificationObject): void {
-    if ('Notification' in window && Notification.permission === 'granted') {
-      new Notification('Exercise Reminder',
-        object
-      );
-    }
-  }
-
-
-  public setReminder(time: string, message: string, index: number, resolve: Function): void {
-    if (!this.notificationsSet.has(index)) { // if not yet added
-      const delay = new Date(time).getTime() - new Date().getTime();
-      const randomIcon = this.getRandomIcon();
-      const notificationObject: NotificationObject = {
-        body: message,
-        icon: randomIcon,
-        requireInteraction: true
+    if (/^\d{2}:\d{2}$/.test(time)) {
+      const [hours, minutes] = time.split(':').map(Number);
+      targetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes, 0);
+      
+      // If the target time has already passed today, schedule for tomorrow
+      if (targetDate.getTime() <= now.getTime()) {
+        targetDate.setDate(targetDate.getDate() + 1);
       }
-      this.notificationsSet.add(index);
-      const timer = this.createMainTimer(notificationObject, delay);
-      this.notificationTimerArray.push({ id: timer, completed: false });
-      resolve();
     } else {
-      throw new Error(`Reminder with index ${index} already exists.`);
+      targetDate = new Date(time);
     }
+
+    return targetDate.getTime() - now.getTime();
   }
 
+  // Registers a new reminder timer for the specified index
+  public setReminder(time: string, message: string, index: number): void {
+    const delay = this.calculateDelay(time);
 
-  private createMainTimer(notificationObject: NotificationObject, delay: number): ReturnType<typeof setTimeout> {
-    const timer = setTimeout(() => {
+    if (delay <= 0) {
+      console.warn(`[ReminderService] Scheduled time for reminder #${index} is invalid or in the past.`);
+      return;
+    }
+
+    const notificationObject: NotificationObject = {
+      body: message,
+      icon: this.getRandomIcon(),
+      requireInteraction: true
+    };
+
+    const timerId = setTimeout(() => {
+      console.log(`[ReminderService] Timer #${index} triggered.`);
       this.showNotification(notificationObject);
 
-      // Mark this timer as completed
-      const timerIndex = this.notificationTimerArray.findIndex(t => t.id === timer);
-      if (timerIndex !== -1) {
-        this.notificationTimerArray[timerIndex].completed = true;
-
-        // Check if all timers are completed
-        if (this.notificationTimerArray.every(t => t.completed)) {
-          console.log('All notifications have been shown.');
-          this.onAllTimersComplete();
-        }
+      const timerEntry = this.activeTimersMap.get(index);
+      if (timerEntry) {
+        timerEntry.completed = true;
+        this.checkAllCompleted();
       }
     }, delay);
 
-    return timer;
+    this.activeTimersMap.set(index, { id: timerId, completed: false });
   }
 
+  // Checks if all active timers have finished running
+  private checkAllCompleted(): void {
+    if (this.activeTimersMap.size === 0) {
+      this.onAllTimersComplete();
+      return;
+    }
 
-  public requestPermission(): void {
-    Notification.requestPermission().then(permission => {
-      if (permission === 'granted') {
-        console.log('Notification permission granted.');
-      } else {
-        console.error('Notification permission denied.');
-      }
-    });
+    const allCompleted = Array.from(this.activeTimersMap.values()).every(t => t.completed);
+    if (allCompleted) {
+      this.onAllTimersComplete();
+    }
   }
 
+  // Displays native browser notification or delegates to Service Worker when available
+  private showNotification(object: NotificationObject): void {
+    console.log('[ReminderService] Attempting to display notification:', object);
 
+    if (!('Notification' in window)) {
+      alert('System notifications are not supported by your browser.');
+      return;
+    }
+
+    if (Notification.permission !== 'granted') {
+      alert('Notification permissions are blocked. Please enable them in your browser settings.');
+      return;
+    }
+
+    // Use Service Worker if available (for PWA support), fallback to standard Notification API
+    if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+      navigator.serviceWorker.ready
+        .then(reg => reg.showNotification('Exercise Reminder', object))
+        .catch(() => new Notification('Exercise Reminder', object));
+    } else {
+      new Notification('Exercise Reminder', object);
+    }
+  }
+
+  // Cancels and removes a specific notification timer by its index
   public removeNotification(index: number): void {
-    this.clearNotificationTimer(index)
-    this.notificationsSet.delete(index);
+    const timerEntry = this.activeTimersMap.get(index);
+    if (timerEntry) {
+      clearTimeout(timerEntry.id);
+      this.activeTimersMap.delete(index);
+    }
+    this.checkAllCompleted();
   }
 
-
+  // Locks the service from accepting new tasks
   public disallowAcceptNewTasks(): void {
     this.acceptNewTasksSignal.set(false);
   }
 
-
-  private onAllTimersComplete(): void {
-    console.log('All notification timers have finished.');
+  // Resets the state to allow new task creation
+  public resetTaskAcceptance(): void {
     this.acceptNewTasksSignal.set(true);
   }
 
+  // Resets internal timer collection when all timers complete
+  private onAllTimersComplete(): void {
+    console.log('[ReminderService] All timers completed. Unlocking form.');
+    this.activeTimersMap.clear();
+    this.acceptNewTasksSignal.set(true);
+  }
+
+  // Returns array representation of current active timers for testing or debugging
+  public getNotificationTimerArray(): CounterObject[] {
+    return Array.from(this.activeTimersMap.values()).map(entry => ({
+      id: entry.id,
+      completed: entry.completed
+    }));
+  }
 }

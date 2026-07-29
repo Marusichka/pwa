@@ -7,9 +7,6 @@ import { AppComponent } from './app.component';
 
 
 @NgModule({
-  declarations: [
-    AppComponent,
-  ],
   imports: [
     BrowserModule,
     FormsModule,
@@ -19,7 +16,8 @@ import { AppComponent } from './app.component';
       // Register the ServiceWorker as soon as the application is stable
       // or after 30 seconds (whichever comes counter-one).
       registrationStrategy: 'registerWhenStable:30000'
-    })
+    }),
+    AppComponent
   ],
   providers: [],
   bootstrap: [AppComponent]

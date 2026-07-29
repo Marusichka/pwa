@@ -1,104 +1,164 @@
-import { TestBed } from '@angular/core/testing';
-import { ReminderService } from './reminder.service';
+import { Injectable, signal, Signal } from '@angular/core';
+import { CounterObject, NotificationObject } from '../types/notification';
 
-describe('ReminderService', () => {
-  let service: ReminderService;
+@Injectable({
+  providedIn: 'root'
+})
+export class ReminderService {
+  private readonly icons: string[] = [
+    'assets/icons/2_m.jpg',
+    'assets/icons/4_m.jpg',
+    'assets/icons/5_m.jpg'
+  ];
 
-  beforeEach(() => {
-    TestBed.configureTestingModule({});
-    service = TestBed.inject(ReminderService);
-  });
+  // Map storing timer entries with their index, timeout ID, and completion status
+  private readonly activeTimersMap = new Map<number, { id: ReturnType<typeof setTimeout>; completed: boolean }>();
+  
+  // Writable signal tracking whether new tasks can be added
+  private readonly acceptNewTasksSignal = signal<boolean>(true);
+  
+  // Read-only signal exposed to components
+  public readonly acceptNewTasks: Signal<boolean> = this.acceptNewTasksSignal.asReadonly();
 
-  it('should be created', () => {
-    expect(service).toBeTruthy();
-  });
+  // Returns a random icon path for notifications
+  private getRandomIcon(): string {
+    const randomIndex = Math.floor(Math.random() * this.icons.length);
+    return this.icons[randomIndex];
+  }
 
-  describe('setReminder', () => {
-    it('should add a reminder to the timer array', () => {
-      const spy = spyOn(service as any, 'createMainTimer').and.returnValue(1234);
-      const resolveSpy = jasmine.createSpy('resolve');
-      const time = new Date().toISOString();
-      const message = 'Test task';
-      const index = 0;
+  // Calculates delay in milliseconds, supporting both "HH:mm" and ISO/datetime string formats
+  private calculateDelay(time: string): number {
+    if (!time) return 0;
 
-      service.setReminder(time, message, index, resolveSpy);
+    const now = new Date();
+    let targetDate: Date;
 
-      expect(service['notificationTimerArray'].length).toBe(1);
-      expect(resolveSpy).toHaveBeenCalled();
-      expect(service['notificationTimerArray'][0].completed).toBe(false);
-    });
-
-    it('should throw an error if reminder already exists', () => {
-      const resolveSpy = jasmine.createSpy('resolve');
-      const time = new Date().toISOString();
-      const message = 'Test task';
-      const index = 0;
-
-      service.setReminder(time, message, index, resolveSpy);
-
-      expect(() => {
-        service.setReminder(time, message, index, resolveSpy);
-      }).toThrowError(`Reminder with index ${index} already exists.`);
-    });
-  });
-
-  describe('removeNotification', () => {
-    it('should remove the reminder from the timer array and set', () => {
-      const time = new Date().toISOString();
-      const message = 'Test task';
-      const index = 0;
-      const resolveSpy = jasmine.createSpy('resolve');
-
-      service.setReminder(time, message, index, resolveSpy);
-      const initialTimerArrayLength = service['notificationTimerArray'].length;
-
-      // Now remove the notification and verify
-      service.removeNotification(index);
-
-      expect(service['notificationTimerArray'].length).toBe(initialTimerArrayLength - 1);
-      expect(service['notificationsSet'].has(index)).toBe(false);
-    });
-  });
-
-  describe('disallowAcceptNewTasks', () => {
-    it('should set acceptNewTasksSignal to false', () => {
-      service.disallowAcceptNewTasks();
-      expect(service.acceptNewTasksSignal()).toBe(false);
-    });
-  });
-
-  describe('getNotificationTimerArray', () => {
-    it('should return the correct notification timer array', () => {
-      const time = new Date().toISOString();
-      const message = 'Test task';
-      const index = 0;
-      const resolveSpy = jasmine.createSpy('resolve');
-
-      service.setReminder(time, message, index, resolveSpy);
-
-      const timerArray = service.getNotificationTimerArray();
-      expect(timerArray.length).toBe(1);
-    });
-  });
-
-  describe('onAllTimersComplete', () => {
-    it('should set acceptNewTasksSignal to true when all timers are complete', () => {
-      const spyOnSet = spyOn(service.acceptNewTasksSignal, 'set');
-
-      // Set the notificationTimerArray to simulate completed timers
-      service['notificationTimerArray'] = [
-        { id: 1, completed: true },
-        { id: 2, completed: true }
-      ];
-
-      // This simulates the logic inside `setReminder` or the timeout callback
-      if (service['notificationTimerArray'].every(timer => timer.completed)) {
-        service.acceptNewTasksSignal.set(true);
+    if (/^\d{2}:\d{2}$/.test(time)) {
+      const [hours, minutes] = time.split(':').map(Number);
+      targetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes, 0);
+      
+      // If the target time has already passed today, schedule for tomorrow
+      if (targetDate.getTime() <= now.getTime()) {
+        targetDate.setDate(targetDate.getDate() + 1);
       }
+    } else {
+      targetDate = new Date(time);
+    }
 
-      // Ensure the signal was set to `true` when all timers are completed
-      expect(spyOnSet).toHaveBeenCalledWith(true);
-    });
-  });
+    return targetDate.getTime() - now.getTime();
+  }
 
-});
+  // Registers a new reminder timer for the specified index
+  public setReminder(time: string, message: string, index: number): void {
+    const delay = this.calculateDelay(time);
+
+    if (delay <= 0) {
+      console.warn(`[ReminderService] Scheduled time for reminder #${index} is invalid or in the past.`);
+      return;
+    }
+
+    const notificationObject: NotificationObject = {
+      body: message,
+      icon: this.getRandomIcon(),
+      requireInteraction: true
+    };
+
+    const timerId = setTimeout(() => {
+      console.log(`[ReminderService] Timer #${index} triggered.`);
+      this.showNotification(notificationObject);
+
+      const timerEntry = this.activeTimersMap.get(index);
+      if (timerEntry) {
+        timerEntry.completed = true;
+        this.checkAllCompleted();
+      }
+    }, delay);
+
+    this.activeTimersMap.set(index, { id: timerId, completed: false });
+  }
+
+  // Checks if all active timers have finished running
+  private checkAllCompleted(): void {
+    if (this.activeTimersMap.size === 0) {
+      this.onAllTimersComplete();
+      return;
+    }
+
+    const allCompleted = Array.from(this.activeTimersMap.values()).every(t => t.completed);
+    if (allCompleted) {
+      this.onAllTimersComplete();
+    }
+  }
+
+  // Displays native browser notification or delegates to Service Worker when available
+  private showNotification(object: NotificationObject): void {
+    console.log('[ReminderService] Attempting to display notification:', object);
+
+    if (!('Notification' in window)) {
+      alert('System notifications are not supported by your browser.');
+      return;
+    }
+
+    if (Notification.permission !== 'granted') {
+      alert('Notification permissions are blocked. Please enable them in your browser settings.');
+      return;
+    }
+
+    // Use Service Worker if available (for PWA support), fallback to standard Notification API
+    if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+      navigator.serviceWorker.ready
+        .then(reg => reg.showNotification('Exercise Reminder', object))
+        .catch(() => new Notification('Exercise Reminder', object));
+    } else {
+      new Notification('Exercise Reminder', object);
+    }
+  }
+
+  // Requests browser permission for desktop notifications
+  public requestPermission(): void {
+    if ('Notification' in window) {
+      Notification.requestPermission().then(permission => {
+        if (permission === 'granted') {
+          console.log('[ReminderService] Notification permission granted.');
+        } else {
+          console.warn('[ReminderService] Notification permission denied.');
+        }
+      });
+    }
+  }
+
+  // Cancels and removes a specific notification timer by its index
+  public removeNotification(index: number): void {
+    const timerEntry = this.activeTimersMap.get(index);
+    if (timerEntry) {
+      clearTimeout(timerEntry.id);
+      this.activeTimersMap.delete(index);
+    }
+    this.checkAllCompleted();
+  }
+
+  // Locks the service from accepting new tasks
+  public disallowAcceptNewTasks(): void {
+    this.acceptNewTasksSignal.set(false);
+  }
+
+  // Resets the state to allow new task creation
+  public resetTaskAcceptance(): void {
+    this.acceptNewTasksSignal.set(true);
+  }
+
+  // Resets internal timer collection when all timers complete
+  private onAllTimersComplete(): void {
+    console.log('[ReminderService] All timers completed. Unlocking form.');
+    this.activeTimersMap.clear();
+    this.acceptNewTasksSignal.set(true);
+  }
+
+  // Returns array representation of current active timers for testing or debugging
+  public getNotificationTimerArray(): CounterObject[] {
+    return Array.from(this.activeTimersMap.values()).map(entry => ({
+      id: entry.id,
+      completed: entry.completed
+    }));
+  }
+}

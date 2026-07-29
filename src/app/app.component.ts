@@ -1,123 +1,143 @@
-import {ChangeDetectionStrategy, Component, computed, effect, OnInit} from '@angular/core';
-import {FormArray, FormBuilder, FormGroup, FormsModule, Validators} from '@angular/forms';
-import {ReminderService} from './services/reminder.service';
+import { ChangeDetectionStrategy, Component, OnInit, effect, inject } from '@angular/core';
+import { AbstractControl, FormArray, FormBuilder, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
+import { ReminderService } from './services/reminder.service';
 
 @Component({
   selector: 'app-root',
+  standalone: true,
+  imports: [ReactiveFormsModule],
   templateUrl: './app.component.html',
-  providers: [FormsModule],
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class AppComponent implements OnInit {
-  private maxTasks = 5;
-  public reminderForm!: FormGroup;
-  public acceptNewTasks = computed(() => this.reminderService['acceptNewTasksSignal']());
+  private readonly maxTasks = 5;
+  private readonly fb = inject(FormBuilder);
+  private readonly reminderService = inject(ReminderService);
 
-  constructor(
-    private fb: FormBuilder,
-    private reminderService: ReminderService
-  ) {
+  public reminderForm!: FormGroup;
+
+  // Signal exposed directly from ReminderService
+  public readonly acceptNewTasks = this.reminderService.acceptNewTasks;
+
+  constructor() {
+    // Automatically reset and clear the form when all notifications finish running
     effect(() => {
-      if (this.acceptNewTasks()) {
+      const isAccepting = this.acceptNewTasks();
+      if (isAccepting && this.reminderForm) {
         this.resetForm();
       }
     });
   }
 
-
   ngOnInit(): void {
     this.reminderForm = this.fb.group({
       reminders: this.fb.array([])
     });
-    this.addReminder(); // Add the first reminder form group by default
-    this.requestNotificationPermission();
-    this.reminderService.getNotificationTimerArray();
+
+    this.resetForm();
   }
 
-
+  // Getter for convenient access to the FormArray
   get reminders(): FormArray {
     return this.reminderForm.get('reminders') as FormArray;
   }
 
-
+  // Creates a FormGroup instance for an individual reminder item
   private createReminder(): FormGroup {
     return this.fb.group({
+      id: [crypto.randomUUID()], //  ID for tracking
       time: ['', Validators.required],
       message: ['Time to do task!', Validators.required]
     });
   }
 
-
-  private resetForm(): void {
-    this.reminderForm.reset({
-      reminders: []
-    });
-
-    const reminders = this.reminderForm.get('reminders') as FormArray;
-    while (reminders.length > 1) {
-      reminders.removeAt(1);
-    }
+  // Resets the form array to a single clean initial item
+  public resetForm(): void {
+    if (!this.reminderForm) return;
+    this.reminders.clear();
+    this.reminders.push(this.createReminder());
   }
 
-
-  // Add a new reminder form group to the FormArray
+  // Adds a new reminder item to the array if valid and within limits
   public addReminder(): void {
-    const lastReminder = this.reminders.at(this.reminders.length - 1);
-
-    if (this.reminders.length === this.maxTasks) {
+    if (this.reminders.length >= this.maxTasks) {
       alert(`${this.maxTasks} tasks allowed`);
       return;
     }
 
-    if ((this.reminders.length < 1) || lastReminder.valid) {
+    const lastReminder = this.reminders.at(this.reminders.length - 1);
+
+    if (this.reminders.length === 0 || lastReminder?.valid) {
       this.reminders.push(this.createReminder());
     } else {
       alert('Please fill out the previous reminder before adding a new one.');
     }
   }
 
+  // Removes a reminder at the specified index and cancels its associated timer
 
-  // Remove a reminder form group at a specified index
   public removeReminder(index: number): void {
-    this.reminders.removeAt(index);
     this.reminderService.removeNotification(index);
+    this.reminders.removeAt(index);
   }
 
-
-  // Handle form submission to set reminders
+  // Handles form submission and permission verification
   public setReminders(): void {
-    const allReminders = this.reminders.controls.map((control, index) => {
-      return new Promise((resolve, reject) => {
-        const {time, message} = control.value;
-        if (time && message) {
-          this.reminderService.setReminder(time, message, index, resolve);
+    if (this.reminderForm.invalid) {
+      alert('Please fill all required fields.');
+      return;
+    }
+
+    // Request notification permissions prior to scheduling if not already granted
+    if ('Notification' in window && Notification.permission !== 'granted') {
+      Notification.requestPermission().then(permission => {
+        if (permission === 'granted') {
+          this.processReminders();
         } else {
-          reject("Provide time && message");
+          alert('Notifications are blocked. Please enable them in your browser site settings.');
         }
       });
-    });
-
-    Promise.all(allReminders)
-      .then(() => {
-        alert('Reminders set successfully!');
-        this.reminderService.disallowAcceptNewTasks();
-      })
-      .catch((error) =>  console.log(error));
+    } else {
+      this.processReminders();
+    }
   }
 
+  // Schedules reminders through the service and locks the form
+  private processReminders(): void {
+    try {
+      this.reminders.controls.forEach((control: AbstractControl, index: number) => {
+        const { time, message } = control.value;
+        this.reminderService.setReminder(time, message, index);
+      });
+
+      alert('Reminders set successfully!');
+      this.reminderService.disallowAcceptNewTasks();
+    } catch (error) {
+      console.error('Error setting reminders:', error);
+    }
+  }
+
+  // Determines whether the submit button should be disabled
+  public checkSubmitDisabled(): boolean {
+    return this.reminderForm.invalid || !this.acceptNewTasks();
+  }
+
+  // Determines whether the "Add" button should be disabled
+  public checkAddReminderDisabled(): boolean {
+    return this.reminders.length >= this.maxTasks || !this.acceptNewTasks();
+  }
 
   public requestNotificationPermission(): void {
-    this.reminderService.requestPermission();
+    if ('Notification' in window) {
+      Notification.requestPermission().then(permission => {
+        if (permission === 'granted') {
+          alert('Notification permission granted!');
+        } else {
+          alert('Notification permission denied or blocked in browser settings.');
+        }
+      });
+    } else {
+      alert('This browser does not support system notifications.');
+    }
   }
-
-
-  public checkSubmitDisabled(): boolean {
-    return !this.reminderForm.valid || !this.acceptNewTasks();
-  }
-
-
-  public checkAddReminderDisabled(): boolean {
-    return this.reminders.length < 5 && this.acceptNewTasks();
-  }
-
 }

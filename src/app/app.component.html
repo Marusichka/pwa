@@ -1,24 +1,52 @@
 <h2>Set Task Reminder</h2>
 
-<button (click)="requestNotificationPermission()">Enable Notifications</button>
+<button type="button" (click)="requestNotificationPermission()">
+  Enable Notifications
+</button>
 
 <form [formGroup]="reminderForm" (ngSubmit)="setReminders()">
   <div formArrayName="reminders">
-    <div *ngFor="let reminder of reminders.controls; let i = index" [formGroupName]="i" class="reminder-group">
+    @for (reminder of reminders.controls; track reminder.value.id; let i = $index) {
+      <div [formGroupName]="i" class="reminder-group">
 
-      <label [attr.for]="'time-' + i">Select Time:</label>
-      <input type="datetime-local" formControlName="time" required [readonly]="!acceptNewTasks()" [attr.id]="'time-' + i" />
+        <label [for]="'time-' + i">Select Time:</label>
+        <input 
+          type="datetime-local" 
+          formControlName="time" 
+          required 
+          [readonly]="!acceptNewTasks()" 
+          [id]="'time-' + i" 
+        />
 
-      <label [attr.for]="'message-' + i">Reminder Message:</label>
-      <input type="text" formControlName="message" required [readonly]="!acceptNewTasks()" [attr.id]="'message-' + i" />
+        <label [for]="'message-' + i">Reminder Message:</label>
+        <input 
+          type="text" 
+          formControlName="message" 
+          required 
+          [readonly]="!acceptNewTasks()" 
+          [id]="'message-' + i" 
+        />
 
-      <button type="button" class="remove" (click)="removeReminder(i)" *ngIf="reminders.length > 1">
-        &times;
-      </button>
+        @if (reminders.length > 1) {
+          <button type="button" class="remove" (click)="removeReminder(i)">
+            &times;
+          </button>
+        }
 
-    </div>
+      </div>
+    }
   </div>
 
-  <button type="button" (click)="addReminder()" *ngIf="checkAddReminderDisabled()">Add Reminder</button>
-  <button type="submit" [disabled]="checkSubmitDisabled()">Set Reminders</button>
+  <button 
+    type="button" 
+    (click)="addReminder()" 
+    [disabled]="checkAddReminderDisabled()">
+    Add Reminder
+  </button>
+
+  <button 
+    type="submit" 
+    [disabled]="checkSubmitDisabled()">
+    Set Reminders
+  </button>
 </form>
